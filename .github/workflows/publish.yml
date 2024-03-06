@@ -1,0 +1,115 @@
+name: Publish Library
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_HOME: /opt/cache/cargo
+  CONAN_HOME: /opt/cache/conan
+  COURSIER_HOME: /opt/cache/coursier
+  IVY_HOME: /opt/cache/ivy2
+  NPM_CONFIG_CACHE: /opt/cache/npm
+  SBT_HOME: /opt/cache/sbt
+  XDG_CONFIG_HOME: /opt/cache/pnpm
+
+jobs:
+  build:
+    name: Publish
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        scala: [2.13.12]
+        java: [zulu@1.17]
+    runs-on: harana-dev-linux
+    steps:
+      - name: Cleanup Ref
+        id: ref
+        uses: frabert/replace-string-action@v1.2
+        with:
+          pattern: 'refs\/\w+\/(.*)'
+          string: ${{ github.ref }}
+          replace-with: '$1'
+
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Populate Credentials
+        run: |
+          mkdir -p $SBT_HOME/1.0/plugins
+          if [ ! -f '$SBT_HOME/1.0/plugins/credentials.sbt' ]; then
+            cat <<EOF > $SBT_HOME/1.0/plugins/credentials.sbt
+            credentials += Credentials("GitHub Package Registry", "maven.pkg.github.com", "nadenf", System.getenv("GITHUB_TOKEN"))
+          EOF
+          fi
+
+      - name: Install Frontend Dependencies
+        run: |
+          if [ -f 'js/package.json' ]; then
+            cd js
+            pnpm install
+            cd ..
+          fi
+
+      - name: Publish Packages
+        run: |
+          rm -fr $COURSIER_HOME/cache/https/maven.pkg.github.com/harana/sbt-plugin
+          sbt \
+          -Divy.home=$IVY_HOME \
+          -Dsbt.boot.directory=$SBT_HOME/boot \
+          -Dsbt.coursier.home=$COURSIER_HOME \
+          -Dsbt.global.base=$SBT_HOME/1.0 \
+          -Dsbt.ivy.home=$IVY_HOME \
+          -Dsbt.repository.config=$SBT_HOME/repositories \
+          publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.WRITE_PACKAGES_TOKEN }}
+
+      - name: Get Scala Major Version
+        id: scala
+        uses: actions-ecosystem/action-regex-match@v2
+        with:
+          regex: '([0-9]+\.[0-9]+)\.[0-9]+'
+          text: ${{ matrix.scala }}
+
+      - name: Remove Older Snapshots
+        uses: smartsquaregmbh/delete-old-packages@v0.2.0
+        with:
+          keep: 2
+          version-pattern: ".+?SNAPSHOT"
+          names: |
+            com.harana.${{ github.event.repository.name }}_${{ steps.scala.outputs.group1 }}
+            com.harana.${{ github.event.repository.name }}JS_${{ steps.scala.outputs.group1 }}
+
+      - name: Remove Older Releases
+        uses: smartsquaregmbh/delete-old-packages@v0.2.0
+        with:
+          keep: 2
+          version-pattern: .*[^SNAPSHOT]$
+          names: |
+            com.harana.${{ github.event.repository.name }}_${{ steps.scala.outputs.group1 }}
+            com.harana.${{ github.event.repository.name }}JS_${{ steps.scala.outputs.group1 }}
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -fr /home/runner/.sbt/1.0/plugins/credentials.sbt
+
+      - name: Notify Slack - Success
+        if: success()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_FOOTER: ""
+          SLACK_MESSAGE: "✅  ${{ github.event.repository.name }}  |  publish  |  ${{ steps.ref.outputs.replaced }}"
+          SLACK_WEBHOOK: ${{ secrets.SLACK_BUILDS_WEBHOOK }}
+
+      - name: Notify Slack - Failure
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_FOOTER: ""
+          SLACK_MESSAGE: "⛔️  ${{ github.event.repository.name }}  |  publish  |  ${{ steps.ref.outputs.replaced }}"
+          SLACK_WEBHOOK: ${{ secrets.SLACK_BUILDS_WEBHOOK }}
