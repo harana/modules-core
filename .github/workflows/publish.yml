@@ -64,6 +64,7 @@ jobs:
           -Dsbt.global.base=$SBT_HOME/1.0 \
           -Dsbt.ivy.home=$IVY_HOME \
           -Dsbt.repository.config=$SBT_HOME/repositories \
+          -Dversion.override=${{ steps.ref.outputs.replaced }} \
           publish
         env:
           GITHUB_TOKEN: ${{ secrets.WRITE_PACKAGES_TOKEN }}
